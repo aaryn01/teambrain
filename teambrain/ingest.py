@@ -4,6 +4,7 @@ Two steps so a human can review before anything is written:
   extract(notes) -> plan   (LLM reads the notes against what the graph already knows)
   apply(plan)    -> summary (deterministic Cypher MERGEs)
 """
+import hashlib
 import json
 import re
 
@@ -37,6 +38,12 @@ MEETING NOTES:
 
 def _slug(text: str, n: int = 32) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:n].strip("-")
+
+
+def _short_id(prefix: str, *parts: str) -> str:
+    """Short, stable id: re-applying the same notes MERGEs instead of duplicating."""
+    digest = hashlib.sha1("|".join(parts).lower().encode()).hexdigest()[:6]
+    return f"{prefix}-{digest}"
 
 
 def _context() -> dict:
@@ -112,7 +119,7 @@ def _validate(raw: dict, ctx: dict) -> dict:
             continue
         sup = d.get("supersedes_id")
         decisions.append({
-            "id": f"d-{date}-{_slug(d['title'], 24)}",
+            "id": _short_id("d", date, d["title"]),
             "title": d["title"].strip(),
             "rationale": (d.get("rationale") or "").strip(),
             "decided_by": resolve(d.get("decided_by")),
@@ -120,7 +127,7 @@ def _validate(raw: dict, ctx: dict) -> dict:
         })
 
     return {
-        "meeting": {"id": f"m-{date}-{_slug(title, 24)}", "title": title, "date": date,
+        "meeting": {"id": _short_id("m", date, title), "title": title, "date": date,
                     "notes": (meeting.get("summary") or "").strip()},
         "project_id": project,
         "new_project": new_project,

@@ -12,6 +12,8 @@ load_dotenv()
 MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash")
 # Tried in order when the main model is overloaded (HTTP 429/503) or unavailable.
 FALLBACK_MODELS = [m.strip() for m in os.getenv("LLM_FALLBACK_MODELS", "").split(",") if m.strip()]
+# Lower thinking = much faster tool calls. Leave empty for providers that don't support it.
+REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "").strip()
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +34,8 @@ def chat(messages, tools=None, json_mode=False):
             kwargs["tools"] = tools
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if REASONING_EFFORT:
+            kwargs["reasoning_effort"] = REASONING_EFFORT
         try:
             return client().chat.completions.create(**kwargs).choices[0].message
         except APIStatusError as exc:

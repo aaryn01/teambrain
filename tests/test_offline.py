@@ -40,7 +40,9 @@ def test_validate_resolves_names_and_new_people():
     assert plan["decisions"][0]["supersedes"] == "d-2"
     assert plan["decisions"][1]["decided_by"] is None
     assert plan["decisions"][1]["supersedes"] is None  # unknown ids are dropped
-    assert plan["meeting"]["id"] == "m-2026-10-14-autopay-limit-review"
+    assert plan["meeting"]["id"].startswith("m-") and len(plan["meeting"]["id"]) == 8
+    # same notes -> same ids, so re-applying is idempotent
+    assert ingest._validate(raw, CTX)["decisions"][0]["id"] == plan["decisions"][0]["id"]
 
 
 def test_validate_requires_date():

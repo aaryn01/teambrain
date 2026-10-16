@@ -35,11 +35,19 @@ How to work:
 
 Answer format:
 - Short and direct; lead with the answer. Use bullet points only for lists.
-- Cite every fact with the node id in square brackets right after it, e.g.
-  "The threshold is 0.78 [d-4], decided by Rohan Mehta [p-rohan]."
+- Cite every fact with the node id in square brackets right after it, one id per
+  bracket, e.g. "The threshold is 0.78 [d-4], decided by Rohan Mehta [p-rohan]."
 """
 
-_CITATION = re.compile(r"\[([a-z]+-[a-z0-9-]+)\]")
+_ID = r"[a-z]+-[a-z0-9-]+"
+_CITATION = re.compile(rf"\[({_ID}(?:\s*,\s*{_ID})*)\]")
+
+
+def _citation_ids(text: str) -> list[str]:
+    ids = []
+    for group in _CITATION.findall(text):
+        ids += [i.strip() for i in group.split(",")]
+    return list(dict.fromkeys(ids))
 
 
 def _assistant_message(msg) -> dict:
@@ -75,8 +83,8 @@ def ask(question: str, history: list[dict] | None = None) -> dict:
         msg = chat(messages, tools=TOOL_SCHEMAS)
         if not msg.tool_calls:
             answer = (msg.content or "").strip()
-            ids = list(dict.fromkeys(_CITATION.findall(answer)))
-            return {"answer": answer, "citations": _cited_nodes(ids), "trace": trace}
+            return {"answer": answer, "citations": _cited_nodes(_citation_ids(answer)),
+                    "trace": trace}
 
         messages.append(_assistant_message(msg))
         for tc in msg.tool_calls:
