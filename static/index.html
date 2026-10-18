@@ -295,7 +295,7 @@ function showDetail(id) {
       <div><span class="cite" style="background:${color(n.label)}">${esc(n.label)}</span>
       <div style="font-weight:600;margin-top:4px">${esc(n.name)}</div></div>
       <button onclick="hideDetail()" aria-label="Close">✕</button></div>
-    <dl>${props.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${k === "url" ? `<a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v)}</dd>`).join("")}
+    <dl>${props.map(([k, v]) => `<dt>${esc(k)}${k === "url" ? " (fictional)" : ""}</dt><dd>${esc(v)}</dd>`).join("")}
     <dt>relationships (${rels.length})</dt><dd>${rels.map(esc).join("<br>")}</dd></dl>`;
   box.classList.add("on");
   network.selectNodes([id]);
