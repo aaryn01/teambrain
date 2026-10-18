@@ -13,7 +13,7 @@ collaboration graph, it finds the brokers who hold teams together, who are usual
 not the people on the org chart.
 
 - **Live demo:** https://teambrain-n1kt.onrender.com
-- **Demo video:** YOUR_LINK
+- **Demo video:** https://youtu.be/xxxxx
 
 ![TeamBrain screenshot](docs/screenshot.png)
 
