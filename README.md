@@ -12,7 +12,7 @@ single points of failure?** Using FalkorDB's betweenness centrality on a derived
 collaboration graph, it finds the brokers who hold teams together, who are usually
 not the people on the org chart.
 
-- **Live demo:** _add your Render URL here_
+- **Live demo:** https://teambrain-n1kt.onrender.com
 - **Demo video:** _add your video link here_
 
 ![TeamBrain screenshot](docs/screenshot.png)
