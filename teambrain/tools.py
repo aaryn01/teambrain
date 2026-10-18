@@ -5,6 +5,7 @@ UI can show exactly which graph queries produced an answer.
 """
 import re
 
+from . import risk
 from .db import read
 
 # ---------------------------------------------------------------------------
@@ -95,8 +96,11 @@ LIMIT 5
 """
 
 # Shortest ways two things are connected, in either direction, up to 4 hops.
+# Walks the source relationships only, not the derived COLLABORATES_WITH projection.
 CONNECTION = """
-MATCH path = (a {id: $from_id})-[*1..4]-(b {id: $to_id})
+MATCH path = (a {id: $from_id})
+             -[:MEMBER_OF|OWNS|LEADS|WORKS_ON|ATTENDED|ABOUT|DECIDED|DECIDED_IN|SUPERSEDES|AUTHORED|REFERENCES*1..4]-
+             (b {id: $to_id})
 RETURN [n IN nodes(path) | n.id] AS ids,
        [n IN nodes(path) | coalesce(n.name, n.title)] AS names,
        [r IN relationships(path) |
@@ -153,6 +157,34 @@ def connection(from_id: str, to_id: str) -> dict:
     return _result(CONNECTION, params, read(CONNECTION, params))
 
 
+def key_people() -> dict:
+    """Brokers and single points of failure, via betweenness on the collaboration graph."""
+    rows = risk.key_people()
+    slim = [{
+        "id": r["id"], "name": r["name"], "role": r["role"], "team": r["team"],
+        "risk": r["risk"], "broker_score": r["broker_score"], "broker_rank": r["broker_rank"],
+        "leads_alone": r["leads_alone"],
+        "brokered_pairs": r["brokered_pairs"],
+        "sole_bridge_to": [b["name"] for b in r["sole_bridges"]],
+        "exclusive_knowledge": [f"{e['label']} {e['id']}: {e['name']}" for e in r["exclusive_knowledge"]],
+    } for r in rows]
+    return _result(risk.KEY_PEOPLE, {}, slim)
+
+
+def bus_factor() -> dict:
+    return _result(risk.BUS_FACTOR, {}, risk.bus_factor())
+
+
+def impact_if_leaves(person_id: str) -> dict:
+    data = risk.person_impact(person_id)
+    data["brokered_pairs"] = [
+        f"{p['from']['name']} ({p['from']['team']}) <-> {p['to']['name']} ({p['to']['team']})"
+        for p in data["brokered_pairs"]
+    ]
+    return _result(risk.SOLE_BRIDGES + "\n\n" + risk.EXCLUSIVE_KNOWLEDGE + "\n\n" + risk.BROKERED_PAIRS,
+                   {"id": person_id}, [data])
+
+
 def run_cypher(query: str) -> dict:
     """Ad-hoc read-only Cypher. Blocked twice: a keyword check here, and
     FalkorDB's GRAPH.RO_QUERY, which refuses any write server-side."""
@@ -169,6 +201,9 @@ TOOLS = {
     "person_profile": person_profile,
     "who_knows": who_knows,
     "connection": connection,
+    "key_people": key_people,
+    "bus_factor": bus_factor,
+    "impact_if_leaves": impact_if_leaves,
     "run_cypher": run_cypher,
 }
 
@@ -210,6 +245,20 @@ TOOL_SCHEMAS = [
         "Shortest paths (up to 4 hops) connecting any two nodes, e.g. how a person "
         "is linked to a decision.",
         {"from_id": _ID, "to_id": _ID}, ["from_id", "to_id"]),
+    _fn("key_people",
+        "Key-person risk for the whole company: every person ranked by broker score "
+        "(betweenness centrality on the collaboration graph), with the projects they lead "
+        "alone, projects where they are their team's only link, and knowledge only they hold. "
+        "Use for 'single points of failure', 'bus factor', 'who connects teams', 'key people'.",
+        {}, []),
+    _fn("bus_factor",
+        "Per project: how many people are deeply involved and how concentrated the knowledge "
+        "is in one person. Use for 'which projects are fragile / under-staffed'.",
+        {}, []),
+    _fn("impact_if_leaves",
+        "What the company loses if one person leaves: projects led alone, team bridges that "
+        "break, exclusive knowledge, and collaborator pairs whose only link is this person.",
+        {"person_id": {**_ID, "description": "e.g. p-asha"}}, ["person_id"]),
     _fn("run_cypher",
         "Run a custom READ-ONLY Cypher query when no other tool fits. "
         "Return properties (n.id, n.name, ...), not whole nodes.",

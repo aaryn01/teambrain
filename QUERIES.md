@@ -1,10 +1,10 @@
-# Cypher queries TeamBrain depends on
+# Cypher queries and graph algorithms TeamBrain depends on
 
-Source of truth: `teambrain/tools.py` (reads) and `teambrain/ingest.py` (writes). Seeding queries are in `teambrain/seed.py`.
+Source of truth: `teambrain/tools.py` (reads), `teambrain/risk.py` (collaboration projection and centrality) and `teambrain/ingest.py` (writes). Seeding queries are in `teambrain/seed.py`.
 
 ## Read queries (agent tools)
 
-### `find_entities`
+### find_entities
 
 Resolve names/keywords in a question to node ids. Scores each node by how many search tokens appear in its name/title or description.
 
@@ -20,7 +20,7 @@ ORDER BY hits DESC, label
 LIMIT 12
 ```
 
-### `project_overview`
+### project_overview
 
 Everything attached to one project: owner team, lead, members, active decisions, documents, meetings.
 
@@ -41,7 +41,7 @@ RETURN p.id AS id, p.name AS name, p.status AS status, p.summary AS summary,
        collect(DISTINCT mt {.id, .title, .date}) AS meetings
 ```
 
-### `decision_trail`
+### decision_trail
 
 The full decision history of a project in date order: who decided, in which meeting, who attended, the rationale, supporting documents, and what superseded what.
 
@@ -64,7 +64,7 @@ RETURN d.id AS id, d.title AS title, d.rationale AS rationale,
 ORDER BY date
 ```
 
-### `person_profile`
+### person_profile
 
 A person's team, role, projects, decisions, documents and meetings.
 
@@ -85,7 +85,7 @@ RETURN p.id AS id, p.name AS name, p.role AS role,
        collect(DISTINCT m {.id, .title, .date}) AS meetings
 ```
 
-### `who_knows`
+### who_knows
 
 Expertise ranking: scores every person by their paths into a project. Direct links (LEADS 5, WORKS_ON 3) weigh more than indirect ones (DECIDED 3, AUTHORED 2, ATTENDED 1 per meeting).
 
@@ -105,12 +105,14 @@ ORDER BY score DESC
 LIMIT 5
 ```
 
-### `connection`
+### connection
 
-Shortest paths (up to 4 hops, any direction) between two nodes, returned as readable hops.
+Shortest paths (up to 4 hops, any direction) between two nodes over the source relationships, returned as readable hops.
 
 ```cypher
-MATCH path = (a {id: $from_id})-[*1..4]-(b {id: $to_id})
+MATCH path = (a {id: $from_id})
+             -[:MEMBER_OF|OWNS|LEADS|WORKS_ON|ATTENDED|ABOUT|DECIDED|DECIDED_IN|SUPERSEDES|AUTHORED|REFERENCES*1..4]-
+             (b {id: $to_id})
 RETURN [n IN nodes(path) | n.id] AS ids,
        [n IN nodes(path) | coalesce(n.name, n.title)] AS names,
        [r IN relationships(path) |
@@ -120,13 +122,122 @@ ORDER BY length
 LIMIT 3
 ```
 
-### `run_cypher`
+### run_cypher
 
 Free-form fallback for questions no tool covers. Executed with `GRAPH.RO_QUERY`, so FalkorDB rejects any write; a keyword check also blocks CREATE/MERGE/SET/DELETE before it reaches the server.
 
+## Key-person risk (graph algorithms)
+
+### Collaboration projection
+
+People never point at each other in the source data, only at projects, meetings, decisions and documents. This derives `(Person)-[:COLLABORATES_WITH {shared}]->(Person)` edges (both directions) between people who share any of those, so centrality algorithms have a people-to-people graph to run on. Rebuilt after seeding and after every ingest.
+
+```cypher
+MATCH (a:Person)-[:LEADS|WORKS_ON|ATTENDED|DECIDED|AUTHORED]->(x)
+OPTIONAL MATCH (x)-[:ABOUT]->(pr:Project)
+WITH a, CASE WHEN x:Project THEN x ELSE coalesce(pr, x) END AS ctx
+WITH a, collect(DISTINCT ctx) AS ctxs
+UNWIND ctxs AS ctx
+MATCH (b:Person)-[:LEADS|WORKS_ON|ATTENDED|DECIDED|AUTHORED]->(y)
+OPTIONAL MATCH (y)-[:ABOUT]->(pr2:Project)
+WITH a, b, ctx, CASE WHEN y:Project THEN y ELSE coalesce(pr2, y) END AS ctx2
+WHERE a <> b AND ctx = ctx2
+WITH a, b, count(DISTINCT ctx) AS shared
+MERGE (a)-[c:COLLABORATES_WITH]->(b) SET c.shared = shared
+RETURN count(c) AS edges
+```
+
+### key_people — betweenness centrality
+
+FalkorDB's built-in `algo.betweenness` on the collaboration projection. The score counts how often the shortest path between two other people runs through this person: the brokers who connect teams. Project leads are hubs inside one project and often score zero here, which is the whole point of the view.
+
+```cypher
+CALL algo.betweenness({nodeLabels: ['Person'], relationshipTypes: ['COLLABORATES_WITH'],
+                       samplingSize: 100, samplingSeed: 7})
+YIELD node AS p, score
+MATCH (p)-[:MEMBER_OF]->(t:Team)
+OPTIONAL MATCH (p)-[:LEADS]->(lp:Project)
+OPTIONAL MATCH (p)-[:COLLABORATES_WITH]->(c:Person)
+RETURN p.id AS id, p.name AS name, p.role AS role, t.id AS team_id, t.name AS team,
+       round(score * 10) / 10 AS broker_score,
+       collect(DISTINCT lp {.id, .name}) AS leads,
+       count(DISTINCT c) AS collaborators
+ORDER BY broker_score DESC, collaborators DESC
+```
+
+### Sole bridges
+
+Projects owned by another team where this person is their own team's only link. If they leave, their team loses visibility into that project.
+
+```cypher
+MATCH (p:Person {id: $id})-[:MEMBER_OF]->(t:Team)
+MATCH (p)-[:LEADS|WORKS_ON|ATTENDED|DECIDED|AUTHORED]->(x)
+OPTIONAL MATCH (x)-[:ABOUT]->(pr1:Project)
+WITH p, t, CASE WHEN x:Project THEN x ELSE pr1 END AS pr
+WITH DISTINCT p, t, pr
+WHERE NOT (t)-[:OWNS]->(pr)
+OPTIONAL MATCH (o:Person)-[:MEMBER_OF]->(t) WHERE o <> p
+OPTIONAL MATCH (o)-[r1:LEADS|WORKS_ON]->(pr)
+OPTIONAL MATCH (o)-[r2:ATTENDED|DECIDED|AUTHORED]->(z)-[:ABOUT]->(pr)
+WITH pr, t, collect(DISTINCT CASE WHEN r1 IS NOT NULL OR r2 IS NOT NULL THEN o.id END) AS others
+WHERE size(others) = 0
+MATCH (owner:Team)-[:OWNS]->(pr)
+RETURN pr.id AS id, pr.name AS name, owner.name AS owner_team, t.name AS team
+```
+
+### Exclusive knowledge
+
+Meetings, decisions and documents where this person is the only person directly attached.
+
+```cypher
+MATCH (p:Person {id: $id})-[r]->(x)
+WHERE NOT x:Team AND NOT x:Person
+OPTIONAL MATCH (o:Person)-[]->(x) WHERE o <> p
+WITH x, type(r) AS rel, count(o) AS others
+WHERE others = 0
+RETURN x.id AS id, labels(x)[0] AS label, coalesce(x.name, x.title) AS name, rel
+ORDER BY label, name
+```
+
+### Brokered pairs
+
+Pairs of this person's collaborators who do not collaborate directly with each other: today their knowledge flows through this person.
+
+```cypher
+MATCH (p:Person {id: $id})-[:COLLABORATES_WITH]->(c:Person)
+WITH p, collect(c) AS cs
+UNWIND cs AS a
+UNWIND cs AS b
+WITH a, b WHERE a.id < b.id AND NOT (a)-[:COLLABORATES_WITH]->(b)
+MATCH (a)-[:MEMBER_OF]->(ta:Team), (b)-[:MEMBER_OF]->(tb:Team)
+RETURN a {.id, .name, team: ta.name} AS from, b {.id, .name, team: tb.name} AS to
+ORDER BY from.name, to.name
+```
+
+### bus_factor
+
+Per project: how many people are deeply involved and how concentrated that involvement is in one person.
+
+```cypher
+MATCH (pr:Project)
+OPTIONAL MATCH (p:Person)-[r]->(x)
+WHERE (x = pr AND type(r) IN ['LEADS', 'WORKS_ON'])
+   OR (type(r) IN ['DECIDED', 'AUTHORED', 'ATTENDED'] AND (x)-[:ABOUT]->(pr))
+WITH pr, p, count(r) AS links
+WITH pr, collect({id: p.id, name: p.name, links: links}) AS people, sum(links) AS total
+UNWIND people AS pp
+WITH pr, total, people, pp ORDER BY pp.links DESC
+WITH pr, total, people, collect(pp)[0] AS top
+RETURN pr.id AS id, pr.name AS name, pr.status AS status,
+       size(people) AS people, total AS links,
+       top.id AS top_person_id, top.name AS top_person,
+       round(100.0 * top.links / total) AS top_share
+ORDER BY people ASC, top_share DESC
+```
+
 ## Write queries (ingest)
 
-### `WRITE_PEOPLE`
+### WRITE_PEOPLE
 
 Add people mentioned in notes who aren't in the graph yet, and link them to their team.
 
@@ -138,7 +249,7 @@ OPTIONAL MATCH (t:Team {id: r.team_id})
 FOREACH (_ IN CASE WHEN t IS NULL THEN [] ELSE [1] END | MERGE (p)-[:MEMBER_OF]->(t))
 ```
 
-### `WRITE_MEETING`
+### WRITE_MEETING
 
 Create the meeting, link it to its project and to every attendee.
 
@@ -153,7 +264,7 @@ MATCH (a:Person {id: aid})
 MERGE (a)-[:ATTENDED]->(m)
 ```
 
-### `WRITE_DECISIONS`
+### WRITE_DECISIONS
 
 Create decisions, link them to meeting, project and decider. If a decision replaces an older one, mark the old one `superseded` and add a `SUPERSEDES` edge, so the history is preserved, not overwritten.
 
@@ -174,7 +285,7 @@ FOREACH (_ IN CASE WHEN old IS NULL THEN [] ELSE [1] END |
   MERGE (d)-[:SUPERSEDES]->(old))
 ```
 
-### `WRITE_PROJECT`
+### WRITE_PROJECT
 
 Create a project when notes are about one that doesn't exist yet.
 

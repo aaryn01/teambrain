@@ -205,6 +205,9 @@ def apply(plan: dict) -> dict:
     if plan.get("decisions"):
         write(WRITE_DECISIONS, {"rows": plan["decisions"], "meeting_id": plan["meeting"]["id"],
                                 "project_id": plan["project_id"], "date": plan["meeting"]["date"]})
+    from .risk import rebuild_collaboration
+
+    rebuild_collaboration()  # keep the people-to-people projection current
     touched = ([plan["meeting"]["id"]] + [d["id"] for d in plan["decisions"]]
                + [p["id"] for p in plan["new_people"]]
                + ([plan["new_project"]["id"]] if plan.get("new_project") else []))

@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from teambrain import agent, ingest
+from teambrain import agent, ingest, risk
 from teambrain.db import read
 from teambrain.seed import seed_graph
 from teambrain.seed_data import SAMPLE_NOTES
@@ -47,8 +47,26 @@ def graph():
         "MATCH (n) RETURN n.id AS id, labels(n)[0] AS label, "
         "coalesce(n.name, n.title) AS name, properties(n) AS props"
     )
-    edges = read("MATCH (a)-[r]->(b) RETURN a.id AS source, type(r) AS type, b.id AS target")
+    # The derived COLLABORATES_WITH projection is left out of the picture; it is dense
+    # (every pair of collaborators) and would hide the source relationships.
+    edges = read(
+        "MATCH (a)-[r]->(b) WHERE type(r) <> 'COLLABORATES_WITH' "
+        "RETURN a.id AS source, type(r) AS type, b.id AS target"
+    )
     return {"nodes": nodes, "edges": edges}
+
+
+@app.get("/api/risk")
+def risk_overview():
+    return {"people": risk.key_people(), "projects": risk.bus_factor()}
+
+
+@app.get("/api/risk/person/{person_id}")
+def risk_person(person_id: str):
+    try:
+        return risk.person_impact(person_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.post("/api/ask")

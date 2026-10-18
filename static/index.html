@@ -85,6 +85,23 @@
   .tag { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); margin-left: 6px; }
   .tag.warn { background: rgba(214,60,60,.12); color: var(--c-Decision); }
   .ok { color: var(--ok); font-weight: 600; margin-top: 10px; }
+  table.risk { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.risk th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 6px 6px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  table.risk td { padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.risk tr.person { cursor: pointer; }
+  table.risk tr.person:hover td, table.risk tr.person.sel td { background: var(--accent-soft); }
+  .badge { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; }
+  .badge.high { background: rgba(214,60,60,.14); color: var(--c-Decision); }
+  .badge.medium { background: rgba(224,138,0,.16); color: var(--c-Meeting); }
+  .badge.low { background: rgba(15,157,88,.14); color: var(--c-Project); }
+  .bar { height: 6px; border-radius: 3px; background: var(--accent); min-width: 2px; display: inline-block; vertical-align: middle; margin-right: 6px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  h4.sect { margin: 18px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .impact { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-top: 12px; background: var(--bg); }
+  .impact h3 { margin: 0 0 6px; font-size: 14px; }
+  .impact ul { margin: 2px 0 8px; padding-left: 18px; }
+  .impact li { margin: 2px 0; }
+  code { font: 12px "JetBrains Mono", monospace; background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
   .hint { color: var(--muted); font-size: 13px; margin: 0 0 10px; }
   section.graph { position: relative; min-height: 0; }
   #graph { position: absolute; inset: 0; }
@@ -124,6 +141,7 @@
     <div class="tabs">
       <button class="on" data-tab="ask">Ask</button>
       <button data-tab="ingest">Update the brain</button>
+      <button data-tab="risk">Key-person risk</button>
     </div>
 
     <div class="pane on" id="pane-ask">
@@ -149,6 +167,17 @@
         <div id="planBox"></div>
       </div>
     </div>
+
+    <div class="pane" id="pane-risk">
+      <div class="scroll">
+        <p class="hint">Who holds the company together? <b>Broker score</b> is betweenness centrality (FalkorDB <code>algo.betweenness</code>) on a derived collaboration graph: how often the shortest path between two other people runs through this person. Leads are obvious; brokers are not. Click a person to see what breaks if they leave.</p>
+        <div id="riskBox"><p class="thinking">Running graph algorithms…</p></div>
+        <div id="impactBox"></div>
+        <h4 class="sect">Project bus factor</h4>
+        <p class="hint">How many people are deeply involved in each project, and how much of that involvement sits with one person.</p>
+        <div id="busBox"></div>
+      </div>
+    </div>
   </aside>
 
   <section class="graph">
@@ -168,7 +197,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":
 const EXAMPLES = [
   "Why is the fraud auto-block threshold 0.78?",
   "Who should I talk to about the ledger migration?",
-  "What has Asha Rao been involved in?",
+  "Who are our single points of failure?",
+  "What do we lose if Sana Qureshi leaves?",
   "When is the ledger cutover and what's the rollback plan?",
   "How is Sana Qureshi connected to the fraud threshold decision?",
   "What's the current autopay limit and who decided it?",
@@ -343,6 +373,7 @@ async function applyPlan() {
   const btn = document.getElementById("applyBtn"); btn.disabled = true;
   try {
     const res = await api("/api/ingest/apply", { plan: currentPlan });
+    riskLoaded = false;  // the collaboration graph changed; recompute on next visit
     await loadGraph(res.written.concat(res.superseded, currentPlan.attendees, [currentPlan.project_id]));
     document.getElementById("applyMsg").innerHTML = `<div class="ok">Written: ${res.written.length} nodes${res.superseded.length ? `, marked ${res.superseded.join(", ")} as superseded` : ""}. Try asking about it now.</div>`;
   } catch (e) { document.getElementById("applyMsg").innerHTML = `<p class="err">${esc(e.message)}</p>`; btn.disabled = false; }
@@ -352,10 +383,62 @@ document.getElementById("sampleBtn").addEventListener("click", async () => {
   document.getElementById("notes").value = (await api("/api/sample-notes")).notes;
 });
 
+// ---------- key-person risk ----------
+let riskLoaded = false;
+const badge = (r) => `<span class="badge ${esc(r)}">${esc(r)}</span>`;
+
+async function loadRisk() {
+  if (riskLoaded) return;
+  const box = document.getElementById("riskBox");
+  try {
+    const { people, projects } = await api("/api/risk");
+    riskLoaded = true;
+    const max = Math.max(1, ...people.map((p) => p.broker_score));
+    box.innerHTML = `<table class="risk"><thead><tr><th>Risk</th><th>Person</th><th>Broker score</th><th>Why</th></tr></thead><tbody>${
+      people.map((p) => {
+        const why = [];
+        if (p.leads_alone.length) why.push(`sole lead: ${p.leads_alone.join(", ")}`);
+        if (p.sole_bridges.length) why.push(`${esc(p.team)}'s only link to ${p.sole_bridges.map((b) => b.name).join(", ")}`);
+        if (p.exclusive_knowledge.length) why.push(`${p.exclusive_knowledge.length} artifact${p.exclusive_knowledge.length > 1 ? "s" : ""} only they touch`);
+        if (p.brokered_pairs) why.push(`brokers ${p.brokered_pairs} pairs of people`);
+        return `<tr class="person" data-id="${esc(p.id)}"><td>${badge(p.risk)}</td>
+          <td><b>${esc(p.name)}</b><div class="sub">${esc(p.role)} · ${esc(p.team)}</div></td>
+          <td><span class="bar" style="width:${Math.round(60 * p.broker_score / max)}px"></span>${p.broker_score}</td>
+          <td class="sub">${why.map(esc).join("<br>") || "—"}</td></tr>`;
+      }).join("")}</tbody></table>`;
+    box.querySelectorAll("tr.person").forEach((tr) => tr.addEventListener("click", () => showImpact(tr.dataset.id, tr)));
+    document.getElementById("busBox").innerHTML = `<table class="risk"><thead><tr><th>Project</th><th>People</th><th>Most involved</th></tr></thead><tbody>${
+      projects.map((pr) => `<tr><td><b>${esc(pr.name)}</b><div class="sub">${esc(pr.status)}</div></td>
+        <td>${pr.people}${pr.people <= 2 ? " " + badge("high") : ""}</td>
+        <td>${esc(pr.top_person)} <span class="sub">${pr.top_share}% of involvement</span></td></tr>`).join("")}</tbody></table>`;
+  } catch (e) { box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function showImpact(id, row) {
+  document.querySelectorAll("tr.person").forEach((r) => r.classList.toggle("sel", r === row));
+  const box = document.getElementById("impactBox");
+  box.innerHTML = `<p class="thinking">Tracing what depends on them…</p>`;
+  try {
+    const d = await api(`/api/risk/person/${encodeURIComponent(id)}`);
+    const li = (xs, f) => xs.length ? `<ul>${xs.map((x) => `<li>${f(x)}</li>`).join("")}</ul>` : `<div class="sub">none</div>`;
+    box.innerHTML = `<div class="impact"><h3>If ${esc(d.person.name)} left ${badge(d.risk)}</h3>
+      <div class="sub">Broker rank #${d.broker_rank} of ${document.querySelectorAll("tr.person").length} (score ${d.broker_score}), ${d.collaborators} collaborators</div>
+      <h4 class="sect">Projects led by no one else</h4>${li(d.leads_alone, (x) => `${esc(x.name)} <span class="sub">${esc(x.status)}</span>`)}
+      <h4 class="sect">Team bridges that break</h4>${li(d.sole_bridges, (x) => `${esc(d.person.team)} loses its only link to <b>${esc(x.name)}</b> <span class="sub">(${esc(x.owner_team)})</span>`)}
+      <h4 class="sect">Knowledge only they hold</h4>${li(d.exclusive_knowledge, (x) => `<span class="cite" style="background:${color(x.label)}">${esc(x.label)}</span> ${esc(x.name)}`)}
+      <h4 class="sect">People whose only link is through them</h4>${d.brokered_pairs.length
+        ? `<div class="sub">${d.brokered_pairs.length} pairs, e.g. ${d.brokered_pairs.slice(0, 3).map((p) => `${esc(p.from.name)} (${esc(p.from.team)}) ↔ ${esc(p.to.name)} (${esc(p.to.team)})`).join("; ")}</div>`
+        : `<div class="sub">none</div>`}</div>`;
+    highlight([d.person.id, ...d.exclusive_knowledge.map((x) => x.id), ...d.sole_bridges.map((x) => x.id), ...d.leads_alone.map((x) => x.id)]);
+    showDetail(d.person.id);
+  } catch (e) { box.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
 // ---------- wiring ----------
 document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("on", p.id === `pane-${b.dataset.tab}`));
+  if (b.dataset.tab === "risk") loadRisk();
 }));
 document.getElementById("askForm").addEventListener("submit", (e) => {
   e.preventDefault(); const input = document.getElementById("question");
@@ -367,7 +450,7 @@ document.getElementById("fitBtn").addEventListener("click", () => { highlight([]
 document.getElementById("resetBtn").addEventListener("click", async (e) => {
   if (!confirm("Restore the original demo data? Ingested notes will be removed.")) return;
   e.target.disabled = true;
-  try { await api("/api/reset", {}); await loadGraph(); } catch (err) { alert(err.message); }
+  try { await api("/api/reset", {}); await loadGraph(); riskLoaded = false; document.getElementById("impactBox").innerHTML = ""; } catch (err) { alert(err.message); }
   e.target.disabled = false;
 });
 document.getElementById("legend").innerHTML = LABELS.map((l) => `<span style="--dot:${color(l)}">${l}</span>`).join("")

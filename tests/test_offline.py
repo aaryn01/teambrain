@@ -1,7 +1,7 @@
 """Offline tests (no database or LLM needed):  python -m pytest -q"""
 import pytest
 
-from teambrain import ingest, tools
+from teambrain import ingest, risk, tools
 
 CTX = {
     "people": [{"id": "p-kabir", "name": "Kabir Shah", "role": "Compliance Officer", "team": "team-risk"},
@@ -48,6 +48,20 @@ def test_validate_resolves_names_and_new_people():
 def test_validate_requires_date():
     with pytest.raises(ValueError):
         ingest._validate({"meeting": {"title": "x"}, "project_id": "proj-autopay"}, CTX)
+
+
+def test_risk_level_is_monotonic_and_explainable():
+    low = risk._risk_level(sole_bridges=0, exclusive=0, leads_alone=0, broker_rank=9)
+    lead = risk._risk_level(sole_bridges=0, exclusive=0, leads_alone=1, broker_rank=9)
+    broker = risk._risk_level(sole_bridges=2, exclusive=1, leads_alone=0, broker_rank=1, brokered_pairs=12)
+    assert (low, lead, broker) == ("low", "medium", "high")
+    # a top broker who leads nothing is still at least medium: that is the point of the feature
+    assert risk._risk_level(0, 0, 0, broker_rank=1) == "medium"
+
+
+def test_connection_query_ignores_derived_projection():
+    assert "COLLABORATES_WITH" not in tools.CONNECTION
+    assert "COLLABORATES_WITH" in risk.BUILD_COLLABORATION
 
 
 def test_apply_rejects_bad_ids():

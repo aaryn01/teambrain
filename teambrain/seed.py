@@ -115,8 +115,11 @@ def stats(g) -> dict:
 
 
 def seed_graph(graph_name: str = GRAPH_NAME) -> dict:
+    from .risk import rebuild_collaboration  # local import: risk imports db, not seed
+
     g = reset_graph(graph_name)
     load(g)
+    rebuild_collaboration()
     return stats(g)
 
 
